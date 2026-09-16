@@ -33,7 +33,10 @@ async function pobierzNewsy() {
       };
     });
 
-    let angielskieNewsy = filtrujPoJezyku(prosteNewsy, "en");
+    let pelneNewsy = usunNiepelneNewsy(prosteNewsy);
+    let unikalneNewsy = usunDuplikaty(pelneNewsy);
+
+    let angielskieNewsy = filtrujPoJezyku(unikalneNewsy, "en");
     let generalneAngielskieNewsy = filtrujPoKategorii(
       angielskieNewsy,
       "general",
@@ -68,6 +71,53 @@ function sortujPoDacie(newsy) {
 
 function ograniczLiczbeNewsow(newsy, limit) {
   return newsy.slice(0, limit);
+}
+
+function usunNiepelneNewsy(newsy) {
+  return newsy.filter(function (news) {
+    return (
+      news.title &&
+      news.title.trim() !== "" &&
+      news.url &&
+      news.url.trim() !== ""
+    );
+  });
+}
+
+function usunDuplikaty(newsy) {
+  return newsy.filter(function (news, index) {
+    return (
+      index ===
+      newsy.findIndex(function (innyNews) {
+        return innyNews.url === news.url;
+      })
+    );
+  });
+}
+
+function obliczPodobienstwo(tytulA, tytulB) {
+  let slowaA = new Set(tytulA.toLowerCase().trim().split(" "));
+  let slowaB = new Set(tytulB.toLowerCase().trim().split(" "));
+
+  let wspolneSlowa = [...slowaA].filter(function (slowo) {
+    return slowaB.has(slowo);
+  });
+
+  let wszystkieSlowa = new Set([...slowaA, ...slowaB]);
+
+  return wspolneSlowa.length / wszystkieSlowa.size;
+}
+
+function czyNewsySaPodobne(newsA, newsB) {
+  let podobienstwo = obliczPodobienstwo(newsA.title, newsB.title);
+
+  return podobienstwo >= 0.5;
+}
+
+function znajdzPodobneNewsy(newsy, szukanyNews) {
+  return newsy.filter(function (news) {
+    return news !== szukanyNews && czyNewsySaPodobne(news, szukanyNews);
+  });
 }
 
 pobierzNewsy();
