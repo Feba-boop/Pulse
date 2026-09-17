@@ -4,10 +4,34 @@ Pulse is a Node.js news bot that fetches current news from an external API and d
 
 ## Features
 
-- Fetches current news from an API
-- Displays titles, dates, and URLs
-- Limits the number of displayed news articles
+- Fetches latest news from the Currents API
 - Handles basic API errors
+- Converts API responses into simplified news objects
+- Removes incomplete news without a title or URL
+- Removes exact duplicates based on URL
+- Filters news by language
+- Filters news by category
+- Sorts news by publication date
+- Limits the number of displayed results
+- Calculates title similarity using Jaccard similarity
+- Compares unique pairs of news articles
+- Detects potentially similar articles using a test similarity threshold
+
+## Planned Development
+
+Pulse is currently an early prototype.
+
+Future development will include:
+
+- Persistent news storage in a database
+- Multiple news sources
+- Grouping related articles into events
+- Comparing new articles with existing events
+- Improved semantic similarity detection
+- AI-based summarization and classification
+- Event timelines
+- Analysis of possible relationships between events
+- Backend API and frontend interface
 
 ## Setup
 
@@ -18,3 +42,4 @@ Pulse is a Node.js news bot that fetches current news from an external API and d
 
 ```bash
 node --env-file=.env index.js
+```
