@@ -1,3 +1,9 @@
+const { otworzBazeEventow } = require("./baza-eventow");
+
+// Na tym etapie tylko inicjalizujemy trwałą bazę; pipeline nie przypisuje newsów do EVENT-ów.
+const bazaEventow = otworzBazeEventow();
+bazaEventow.zamknij();
+
 async function pobierzNewsy() {
   try {
     let response = await fetch(
@@ -42,7 +48,18 @@ async function pobierzNewsy() {
       "general",
     );
 
-    let posortowaneNewsy = sortujPoDacie(generalneAngielskieNewsy);
+    let podobnePary = znajdzParyPodobnychNewsow(generalneAngielskieNewsy);
+
+    console.log(podobnePary.length);
+
+    for (let i = 0; i < podobnePary.length; i++) {
+      let para = podobnePary[i];
+
+      console.log(para.pierwszyNews.title);
+      console.log(para.drugiNews.title);
+    }
+
+    let posortowaneNewsy = sortujPoDacie(podobnePary);
     let pierwsze5 = ograniczLiczbeNewsow(posortowaneNewsy, 5);
 
     console.log(pierwsze5);
@@ -120,4 +137,51 @@ function znajdzPodobneNewsy(newsy, szukanyNews) {
   });
 }
 
+function znajdzParyPodobnychNewsow(newsy) {
+  let podobnePary = [];
+
+  for (let i = 0; i < newsy.length; i++) {
+    for (let j = i + 1; j < newsy.length; j++) {
+      let newsA = newsy[i];
+      let newsB = newsy[j];
+
+      let podobienstwo = obliczPodobienstwo(newsA.title, newsB.title);
+
+      console.log(newsA.title, newsB.title, podobienstwo);
+      if (czyNewsySaPodobne(newsA, newsB)) {
+        console.log(newsA.title);
+        console.log(newsB.title);
+
+        let para = {
+          pierwszyNews: newsA,
+          drugiNews: newsB,
+        };
+
+        podobnePary.push(para);
+      }
+    }
+  }
+  return podobnePary;
+}
+
 pobierzNewsy();
+
+let testoweNewsy = [
+  {
+    title: "Microsoft launches new AI chip",
+  },
+  {
+    title: "Microsoft launches powerful new AI chip",
+  },
+  {
+    title: "Barcelona wins football match",
+  },
+];
+
+let podobneParyTestowe = znajdzParyPodobnychNewsow(testoweNewsy);
+console.log(podobneParyTestowe.length);
+
+for (let i = 0; i < podobneParyTestowe.length; i++) {
+  console.log(para.pierwszyNews.title);
+  console.log(para.drugiNews.title);
+}
