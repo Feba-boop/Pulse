@@ -23,7 +23,7 @@ Pulse is currently an early prototype.
 
 Future development will include:
 
-- Persistent news storage in a database
+- Connecting the news-fetching pipeline to persistent storage
 - Multiple news sources
 - Grouping related articles into events
 - Comparing new articles with existing events
@@ -49,8 +49,8 @@ node --env-file=.env index.js
 Warstwa SQLite korzysta z wbudowanego `node:sqlite`, bez zależności npm.
 Sprawdzono na Node.js **24.19.0**. Nie jest potrzebny osobny serwer bazy danych.
 
-Przy starcie `index.js` powstają katalog `data`, baza `data/pulse.sqlite` i tabela
-`EVENT`, jeśli jeszcze nie istnieją. Ścieżka bazy jest liczona względem modułu,
+Przy starcie `index.js` powstają katalog `data`, baza `data/pulse.sqlite` i tabele
+`EVENT`, `NEWS` oraz `EVENT_NEWS`, jeśli jeszcze nie istnieją. Ścieżka bazy jest liczona względem modułu,
 nie względem katalogu, z którego uruchomiono polecenie. Dane są wyłączone z Git.
 
 Moduł `baza-eventow.js` udostępnia:
@@ -98,7 +98,74 @@ node --test
 Testy używają oddzielnych baz tymczasowych, w tym dwóch osobnych procesów Node.js.
 Nie zapisują danych demonstracyjnych do domyślnej bazy aplikacji.
 
-Ten etap nie grupuje newsów automatycznie, nie tworzy tabeli newsów ani historii
-zmian. Pipeline newsów pozostaje bez zmian. Istniejące problemy tego pipeline'u:
+Ten etap nie grupuje newsów automatycznie ani nie tworzy historii zmian.
+Pipeline newsów pozostaje bez zmian. Istniejące problemy tego pipeline'u:
 końcowa pętla testowa używa niezdefiniowanego `para`, a `sortujPoDacie` otrzymuje
 pary bez pola `published`. Nie naprawiono ich w ramach obsługi SQLite.
+
+## Trwałe NEWS-y i relacja wiele-do-wielu
+
+Ten sam moduł `baza-eventow.js` udostępnia teraz również `utworzNews({ tytul,
+url, dataPublikacji, autor, zrodlo })`. Obiekt zawiera siedem pól:
+`id`, `tytul`, `dataPublikacji`, `dataPobrania`, `autor`, `zrodlo`, `url`.
+
+- `id` to nowy UUID; tytuł i URL są wymagane i nie mogą być puste.
+- `dataPublikacji` pochodzi od źródła. Jeśli jest dostępna, należy podać datę
+  ze strefą czasową (np. `2026-10-03T10:00:00+02:00`); jest normalizowana do ISO UTC.
+  Bez strefy funkcja zgłasza błąd, zamiast przyjmować lokalną strefę komputera.
+- `dataPobrania` to czas wywołania `utworzNews()` w ISO UTC. Obiekt należy tworzyć
+  bezpośrednio po otrzymaniu informacji przez Pulse. Zapis i ponowny odczyt nie
+  zmieniają tej daty; nie jest ona kopiowana z daty publikacji.
+- Brak daty publikacji, autora lub źródła jest zapisywany jako `null`.
+  Źródło jest na tym etapie tekstem dostarczonym przez wywołującego, bez automatycznego
+  rozpoznawania wydawcy. URL nie ma ograniczenia unikalności; deduplikacja po URL
+  nie jest częścią tego etapu.
+
+Metody otwartej bazy:
+
+| Metoda | Działanie |
+| --- | --- |
+| `zapiszNews(news)` | Dodaje NEWS; istniejące ID powoduje błąd, bez nadpisania. |
+| `pobierzNewsy()` | Zwraca zapisane NEWS-y. |
+| `powiazNewsZEventem(newsId, eventId)` | Łączy dwa wcześniej zapisane rekordy. |
+| `pobierzNewsyEventu(eventId)` | Zwraca NEWS-y wskazanego EVENT-u. |
+| `pobierzEventyNewsa(newsId)` | Zwraca EVENT-y wskazanego NEWS-a. |
+
+Odczyty relacji bez dopasowań (także dla nieistniejącego ID) zwracają pustą tablicę.
+NEWS-y są sortowane po `dataPobrania`, a EVENT-y po `dataRozpoczecia`, rosnąco,
+z ID jako dodatkowym kryterium. Powiązanie nie zmienia dat ani statusu rekordów.
+
+`EVENT_NEWS` ma klucze obce oraz złożony klucz główny `(eventId, newsId)`.
+Klucze obce są jawnie włączane na każdym połączeniu. Nieistniejący rekord albo
+powtórzone powiązanie powodują błąd SQLite. Nie ma kasowania kaskadowego.
+Dodatkowy indeks po `newsId` wspiera wyszukiwanie powiązań w drugim kierunku.
+Wszystkie wartości w zapisie i filtrowaniu przekazywane są przez parametry SQL.
+
+Przykład ręcznego użycia (bez API i automatycznego grupowania):
+
+```js
+const { otworzBazeEventow, utworzEvent, utworzNews } = require("./baza-eventow");
+const baza = otworzBazeEventow();
+try {
+  const event = utworzEvent({ tytul: "Przykładowe wydarzenie" });
+  const news = utworzNews({
+    tytul: "Przykładowa wiadomość",
+    url: "https://example.com/news",
+    dataPublikacji: "2026-10-03T10:00:00+02:00",
+    zrodlo: "Przykładowy wydawca",
+  });
+  baza.zapiszEvent(event);
+  baza.zapiszNews(news);
+  baza.powiazNewsZEventem(news.id, event.id);
+  console.log(baza.pobierzNewsyEventu(event.id));
+  console.log(baza.pobierzEventyNewsa(news.id));
+} finally {
+  baza.zamknij();
+}
+```
+
+Każde wykonanie tego przykładu tworzy nowe rekordy. Istniejąca baza z samą tabelą
+EVENT zostanie rozszerzona przy kolejnym otwarciu, bez usuwania danych.
+Pobieranie newsów z API nie zapisuje ich jeszcze automatycznie do SQLite.
+Testy `node --test` sprawdzają trwałość, oba kierunki relacji, blokadę duplikatów
+i niepoprawnych kluczy obcych oraz rozszerzenie starej bazy z zachowaniem EVENT-ów.
