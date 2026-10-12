@@ -4,174 +4,174 @@ const { DatabaseSync } = require("node:sqlite");
 const { mkdtempSync, readdirSync, unlinkSync, rmdirSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
-const { otworzBazeEventow, utworzEvent, utworzNews } = require("../baza-eventow");
+const { openDatabase, createEvent, createNews } = require("../storage");
 
-function sciezkaTestowa(t) {
-  const katalog = mkdtempSync(join(tmpdir(), "pulse-version-test-"));
+function createTestDatabasePath(t) {
+  const directory = mkdtempSync(join(tmpdir(), "pulse-version-test-"));
   t.after(() => {
-    for (const plik of readdirSync(katalog)) unlinkSync(join(katalog, plik));
-    rmdirSync(katalog);
+    for (const file of readdirSync(directory)) unlinkSync(join(directory, file));
+    rmdirSync(directory);
   });
-  return join(katalog, "test.sqlite");
+  return join(directory, "test.sqlite");
 }
 
-const artykul = { url: "https://example.com/a", tytul: "Pierwszy tytuł", autor: null,
-  dataPublikacji: "2020-01-01T12:00:00Z", zrodlo: "Wydawca" };
+const article = { url: "https://example.com/a", title: "Pierwszy tytuł", author: null,
+  publishedAt: "2020-01-01T12:00:00Z", source: "Wydawca" };
 
-test("pierwszy zapis tworzy NEWS i wersję; identyczne dane nie zmieniają stanu", (t) => {
+test("First save creates news and a version; identical data leaves state unchanged", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-07T10:00:00Z") });
-  const baza = otworzBazeEventow(sciezkaTestowa(t));
+  const database = openDatabase(createTestDatabasePath(t));
   try {
-    const news = baza.zapiszNews(utworzNews(artykul));
-    const wersja = baza.pobierzNajnowszaWersjeNewsa(news.id);
-    assert.deepEqual(baza.pobierzNewsy(), [news]);
-    assert.deepEqual(baza.pobierzWersjeNewsa(news.id), [wersja]);
-    assert.equal(news.dataPobrania, "2026-10-07T10:00:00.000Z");
-    assert.equal(wersja.dataWersji, news.dataPobrania);
-    assert.equal(wersja.dataPublikacji, "2020-01-01T12:00:00.000Z");
+    const news = database.saveNews(createNews(article));
+    const version = database.getLatestNewsVersion(news.id);
+    assert.deepEqual(database.getNewsItems(), [news]);
+    assert.deepEqual(database.getNewsVersions(news.id), [version]);
+    assert.equal(news.firstSeenAt, "2026-10-07T10:00:00.000Z");
+    assert.equal(version.versionDetectedAt, news.firstSeenAt);
+    assert.equal(version.publishedAt, "2020-01-01T12:00:00.000Z");
     t.mock.timers.tick(1000);
-    assert.deepEqual(baza.zapiszNews(artykul), news);
-    assert.deepEqual(baza.pobierzWersjeNewsa(news.id), [wersja]);
-    assert.deepEqual(baza.znajdzNewsPoUrl(artykul.url), news);
-    assert.deepEqual(baza.pobierzNews(news.id), news);
-    assert.equal(baza.pobierzNews("brak"), null);
-    assert.equal(baza.znajdzNewsPoUrl("brak"), null);
-    assert.equal(baza.pobierzNajnowszaWersjeNewsa("brak"), null);
-    assert.deepEqual(baza.pobierzWersjeNewsa("brak"), []);
-  } finally { baza.zamknij(); }
+    assert.deepEqual(database.saveNews(article), news);
+    assert.deepEqual(database.getNewsVersions(news.id), [version]);
+    assert.deepEqual(database.findNewsByUrl(article.url), news);
+    assert.deepEqual(database.getNews(news.id), news);
+    assert.equal(database.getNews("brak"), null);
+    assert.equal(database.findNewsByUrl("brak"), null);
+    assert.equal(database.getLatestNewsVersion("brak"), null);
+    assert.deepEqual(database.getNewsVersions("brak"), []);
+  } finally { database.close(); }
 });
 
-test("zmiany tytułu, autora i daty tworzą kolejne wersje, zachowane po otwarciu", (t) => {
+test("Title, author, and date changes create versions that persist after reopening", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-07T10:00:00Z") });
-  const sciezka = sciezkaTestowa(t);
-  let baza = otworzBazeEventow(sciezka);
-  let news, historia;
+  const databasePath = createTestDatabasePath(t);
+  let database = openDatabase(databasePath);
+  let news, history;
   try {
-    news = baza.zapiszNews(artykul);
-    const zmiany = [
-      { ...artykul, tytul: "Nowy tytuł" },
-      { ...artykul, tytul: "Nowy tytuł", autor: "John Smith" },
-      { ...artykul, tytul: "Nowy tytuł", autor: "John Smith", dataPublikacji: null },
-      artykul, // Powrót do starych wartości jest kolejną wersją, nie duplikatem historii.
+    news = database.saveNews(article);
+    const changes = [
+      { ...article, title: "Nowy tytuł" },
+      { ...article, title: "Nowy tytuł", author: "John Smith" },
+      { ...article, title: "Nowy tytuł", author: "John Smith", publishedAt: null },
+      article, // Returning to previous values creates another version in the history.
     ];
-    for (const dane of zmiany) {
+    for (const articleData of changes) {
       t.mock.timers.tick(1000);
-      assert.deepEqual(baza.zapiszNews(dane), news);
+      assert.deepEqual(database.saveNews(articleData), news);
     }
-    historia = baza.pobierzWersjeNewsa(news.id);
-    assert.equal(historia.length, 5);
-    assert.equal(new Set(historia.map((w) => w.id)).size, 5);
-    assert.deepEqual(historia.map((w) => w.tytul),
-      [artykul.tytul, "Nowy tytuł", "Nowy tytuł", "Nowy tytuł", artykul.tytul]);
-    assert.deepEqual(historia.map((w) => w.autor), [null, null, "John Smith", "John Smith", null]);
-    assert.deepEqual(historia.map((w) => w.dataPublikacji),
+    history = database.getNewsVersions(news.id);
+    assert.equal(history.length, 5);
+    assert.equal(new Set(history.map((w) => w.id)).size, 5);
+    assert.deepEqual(history.map((w) => w.title),
+      [article.title, "Nowy tytuł", "Nowy tytuł", "Nowy tytuł", article.title]);
+    assert.deepEqual(history.map((w) => w.author), [null, null, "John Smith", "John Smith", null]);
+    assert.deepEqual(history.map((w) => w.publishedAt),
       ["2020-01-01T12:00:00.000Z", "2020-01-01T12:00:00.000Z", "2020-01-01T12:00:00.000Z", null, "2020-01-01T12:00:00.000Z"]);
-    assert.deepEqual(historia.map((w) => w.dataWersji), [0, 1, 2, 3, 4].map((s) => `2026-10-07T10:00:0${s}.000Z`));
-    assert.deepEqual(baza.pobierzNajnowszaWersjeNewsa(news.id), historia[4]);
-  } finally { baza.zamknij(); }
-  baza = otworzBazeEventow(sciezka);
+    assert.deepEqual(history.map((w) => w.versionDetectedAt), [0, 1, 2, 3, 4].map((s) => `2026-10-07T10:00:0${s}.000Z`));
+    assert.deepEqual(database.getLatestNewsVersion(news.id), history[4]);
+  } finally { database.close(); }
+  database = openDatabase(databasePath);
   try {
-    assert.deepEqual(baza.pobierzNewsy(), [news]);
-    assert.deepEqual(baza.pobierzWersjeNewsa(news.id), historia);
-    baza.zapiszNews(artykul);
-    assert.deepEqual(baza.pobierzWersjeNewsa(news.id), historia);
-  } finally { baza.zamknij(); }
+    assert.deepEqual(database.getNewsItems(), [news]);
+    assert.deepEqual(database.getNewsVersions(news.id), history);
+    database.saveNews(article);
+    assert.deepEqual(database.getNewsVersions(news.id), history);
+  } finally { database.close(); }
 });
 
-test("wersje w tej samej milisekundzie mają stabilną kolejność dodania", (t) => {
+test("Versions detected in the same millisecond retain insertion order", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1700000000000 });
-  const baza = otworzBazeEventow(sciezkaTestowa(t));
+  const database = openDatabase(createTestDatabasePath(t));
   try {
-    const news = baza.zapiszNews(artykul);
-    baza.zapiszNews({ ...artykul, tytul: "Drugi" });
-    baza.zapiszNews({ ...artykul, tytul: "Trzeci" });
-    baza.zapiszNews({ ...artykul, tytul: "Trzeci" });
-    assert.deepEqual(baza.pobierzWersjeNewsa(news.id).map((w) => w.tytul), [artykul.tytul, "Drugi", "Trzeci"]);
-    assert.equal(baza.pobierzNajnowszaWersjeNewsa(news.id).tytul, "Trzeci");
-  } finally { baza.zamknij(); }
+    const news = database.saveNews(article);
+    database.saveNews({ ...article, title: "Drugi" });
+    database.saveNews({ ...article, title: "Trzeci" });
+    database.saveNews({ ...article, title: "Trzeci" });
+    assert.deepEqual(database.getNewsVersions(news.id).map((w) => w.title), [article.title, "Drugi", "Trzeci"]);
+    assert.equal(database.getLatestNewsVersion(news.id).title, "Trzeci");
+  } finally { database.close(); }
 });
 
-test("URL nie jest normalizowany; źródło i pierwszy czas pozostają stałe", (t) => {
-  const baza = otworzBazeEventow(sciezkaTestowa(t));
+test("URLs are not normalized; source and first-seen time remain fixed", (t) => {
+  const database = openDatabase(createTestDatabasePath(t));
   try {
-    const news = baza.zapiszNews(artykul);
-    assert.deepEqual(baza.zapiszNews({ ...artykul, zrodlo: "Inne" }), news);
-    assert.equal(baza.pobierzWersjeNewsa(news.id).length, 1);
-    for (const url of [artykul.url + "/", " " + artykul.url, "https://EXAMPLE.com/a"]) {
-      assert.equal(baza.zapiszNews({ ...artykul, url }).url, url);
+    const news = database.saveNews(article);
+    assert.deepEqual(database.saveNews({ ...article, source: "Inne" }), news);
+    assert.equal(database.getNewsVersions(news.id).length, 1);
+    for (const url of [article.url + "/", " " + article.url, "https://EXAMPLE.com/a"]) {
+      assert.equal(database.saveNews({ ...article, url }).url, url);
     }
-    assert.equal(baza.pobierzNewsy().length, 4);
-  } finally { baza.zamknij(); }
+    assert.equal(database.getNewsItems().length, 4);
+  } finally { database.close(); }
 });
 
-test("UNIQUE URL, klucze obce i atomowy zapis są wymuszane w SQLite", (t) => {
-  const sciezka = sciezkaTestowa(t);
-  const baza = otworzBazeEventow(sciezka);
-  const sql = new DatabaseSync(sciezka);
+test("SQLite enforces unique URLs, foreign keys, and atomic writes", (t) => {
+  const databasePath = createTestDatabasePath(t);
+  const database = openDatabase(databasePath);
+  const sql = new DatabaseSync(databasePath);
   try {
     sql.exec("PRAGMA foreign_keys = ON");
-    const news = baza.zapiszNews(artykul);
+    const news = database.saveNews(article);
     assert.throws(() => sql.prepare("INSERT INTO NEWS VALUES (?, ?, ?, ?)").run(
-      "inne-id", news.url, news.zrodlo, news.dataPobrania), /UNIQUE constraint failed/);
+      "inne-id", news.url, news.source, news.firstSeenAt), /UNIQUE constraint failed/);
     assert.throws(() => sql.prepare("INSERT INTO NEWS_VERSION VALUES (?, ?, ?, ?, ?, ?)").run(
-      "wersja", "nieistniejacy", "Tytuł", null, news.dataPobrania, null), /FOREIGN KEY constraint failed/);
-    sql.exec(`CREATE TRIGGER odrzuc_wersje BEFORE INSERT ON NEWS_VERSION
-      BEGIN SELECT RAISE(ABORT, 'testowy blad zapisu'); END`);
-    assert.throws(() => baza.zapiszNews({ ...artykul, url: "https://example.com/new" }), /testowy blad/);
-    assert.equal(baza.znajdzNewsPoUrl("https://example.com/new"), null);
-    assert.equal(baza.pobierzNewsy().length, 1);
-  } finally { sql.close(); baza.zamknij(); }
+      "wersja", "nieistniejacy", "Tytuł", null, news.firstSeenAt, null), /FOREIGN KEY constraint failed/);
+    sql.exec(`CREATE TRIGGER reject_version BEFORE INSERT ON NEWS_VERSION
+      BEGIN SELECT RAISE(ABORT, 'test write failure'); END`);
+    assert.throws(() => database.saveNews({ ...article, url: "https://example.com/new" }), /test write failure/);
+    assert.equal(database.findNewsByUrl("https://example.com/new"), null);
+    assert.equal(database.getNewsItems().length, 1);
+  } finally { sql.close(); database.close(); }
 });
 
-test("relacje wiele-do-wielu pozostają po dodaniu wersji i ponownym otwarciu", (t) => {
-  const sciezka = sciezkaTestowa(t);
-  let baza = otworzBazeEventow(sciezka);
-  const eventA = utworzEvent({ tytul: "A" });
-  const eventB = utworzEvent({ tytul: "B" });
+test("Many-to-many links persist after adding versions and reopening", (t) => {
+  const databasePath = createTestDatabasePath(t);
+  let database = openDatabase(databasePath);
+  const eventA = createEvent({ title: "A" });
+  const eventB = createEvent({ title: "B" });
   let newsA, newsB;
   try {
-    baza.zapiszEvent(eventA); baza.zapiszEvent(eventB);
-    newsA = baza.zapiszNews(artykul);
-    newsB = baza.zapiszNews({ ...artykul, url: "https://example.com/b" });
-    baza.powiazNewsZEventem(newsA.id, eventA.id);
-    baza.powiazNewsZEventem(newsA.id, eventB.id);
-    baza.powiazNewsZEventem(newsB.id, eventA.id);
-    baza.zapiszNews({ ...artykul, tytul: "Aktualizacja" });
-  } finally { baza.zamknij(); }
-  baza = otworzBazeEventow(sciezka);
+    database.saveEvent(eventA); database.saveEvent(eventB);
+    newsA = database.saveNews(article);
+    newsB = database.saveNews({ ...article, url: "https://example.com/b" });
+    database.linkNewsToEvent(newsA.id, eventA.id);
+    database.linkNewsToEvent(newsA.id, eventB.id);
+    database.linkNewsToEvent(newsB.id, eventA.id);
+    database.saveNews({ ...article, title: "Aktualizacja" });
+  } finally { database.close(); }
+  database = openDatabase(databasePath);
   try {
-    assert.deepEqual(baza.pobierzNewsyEventu(eventA.id).map((n) => n.id).sort(), [newsA.id, newsB.id].sort());
-    assert.deepEqual(baza.pobierzEventyNewsa(newsA.id).map((e) => e.id).sort(), [eventA.id, eventB.id].sort());
-    assert.deepEqual(baza.pobierzNewsyEventu(eventB.id), [newsA]);
-    assert.deepEqual(baza.pobierzEventyNewsa(newsB.id), [eventA]);
-    assert.throws(() => baza.powiazNewsZEventem(newsA.id, eventA.id), /UNIQUE constraint failed/);
-    assert.throws(() => baza.powiazNewsZEventem("brak", eventA.id), /FOREIGN KEY constraint failed/);
-    assert.throws(() => baza.powiazNewsZEventem(newsA.id, "brak"), /FOREIGN KEY constraint failed/);
-    assert.deepEqual(baza.pobierzNewsyEventu("' OR 1=1 --"), []);
-    assert.deepEqual(baza.pobierzEventyNewsa("brak"), []);
-  } finally { baza.zamknij(); }
+    assert.deepEqual(database.getNewsForEvent(eventA.id).map((n) => n.id).sort(), [newsA.id, newsB.id].sort());
+    assert.deepEqual(database.getEventsForNews(newsA.id).map((e) => e.id).sort(), [eventA.id, eventB.id].sort());
+    assert.deepEqual(database.getNewsForEvent(eventB.id), [newsA]);
+    assert.deepEqual(database.getEventsForNews(newsB.id), [eventA]);
+    assert.throws(() => database.linkNewsToEvent(newsA.id, eventA.id), /UNIQUE constraint failed/);
+    assert.throws(() => database.linkNewsToEvent("brak", eventA.id), /FOREIGN KEY constraint failed/);
+    assert.throws(() => database.linkNewsToEvent(newsA.id, "brak"), /FOREIGN KEY constraint failed/);
+    assert.deepEqual(database.getNewsForEvent("' OR 1=1 --"), []);
+    assert.deepEqual(database.getEventsForNews("brak"), []);
+  } finally { database.close(); }
 });
 
-test("null i tekst SQL są zachowane, niepoprawne dane odrzucane", (t) => {
-  const baza = otworzBazeEventow(sciezkaTestowa(t));
+test("Null and SQL-like text are preserved; invalid input is rejected", (t) => {
+  const database = openDatabase(createTestDatabasePath(t));
   try {
-    const tytul = "O'Reilly: '); DROP TABLE NEWS; --";
-    const news = baza.zapiszNews({ tytul, url: "https://example.com/?q='" });
-    const wersja = baza.pobierzNajnowszaWersjeNewsa(news.id);
-    assert.equal(wersja.tytul, tytul);
-    assert.equal(wersja.dataPublikacji, null);
-    assert.equal(wersja.autor, null);
-    assert.equal(news.zrodlo, null);
-    for (const dane of [{ ...artykul, tytul: " " }, { ...artykul, url: " " },
-      { ...artykul, dataPublikacji: "niepoprawna" }, { ...artykul, dataPublikacji: "2020-01-01T12:00:00" }]) {
-      assert.throws(() => baza.zapiszNews(dane), TypeError);
+    const title = "O'Reilly: '); DROP TABLE NEWS; --";
+    const news = database.saveNews({ title, url: "https://example.com/?q='" });
+    const version = database.getLatestNewsVersion(news.id);
+    assert.equal(version.title, title);
+    assert.equal(version.publishedAt, null);
+    assert.equal(version.author, null);
+    assert.equal(news.source, null);
+    for (const articleData of [{ ...article, title: " " }, { ...article, url: " " },
+      { ...article, publishedAt: "niepoprawna" }, { ...article, publishedAt: "2020-01-01T12:00:00" }]) {
+      assert.throws(() => database.saveNews(articleData), TypeError);
     }
-    assert.equal(baza.pobierzNewsy().length, 1);
-  } finally { baza.zamknij(); }
+    assert.equal(database.getNewsItems().length, 1);
+  } finally { database.close(); }
 });
 
-function staraBaza(sciezka, duplikat = false) {
-  const sql = new DatabaseSync(sciezka);
+function createLegacyDatabase(databasePath, duplicate = false) {
+  const sql = new DatabaseSync(databasePath);
   try {
     sql.exec(`
       CREATE TABLE EVENT (id TEXT PRIMARY KEY NOT NULL, tytul TEXT NOT NULL,
@@ -184,97 +184,97 @@ function staraBaza(sciezka, duplikat = false) {
     `);
     sql.prepare("INSERT INTO EVENT VALUES (?, ?, ?, ?, ?, ?)").run("event", "Stary EVENT", "aktywny", "2020", "2020", "test");
     sql.prepare("INSERT INTO NEWS VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-      "news", "Stary tytuł", "2019-12-31T12:00:00Z", "2020-01-01T12:00:00Z", "Autor", "Źródło", artykul.url);
+      "news", "Stary tytuł", "2019-12-31T12:00:00Z", "2020-01-01T12:00:00Z", "Autor", "Źródło", article.url);
     sql.prepare("INSERT INTO EVENT_NEWS VALUES (?, ?)").run("event", "news");
-    if (duplikat) {
+    if (duplicate) {
       sql.prepare("INSERT INTO NEWS VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-        "news2", "Inny tytuł", null, "2020-01-02T12:00:00Z", null, null, artykul.url);
+        "news2", "Inny tytuł", null, "2020-01-02T12:00:00Z", null, null, article.url);
       sql.prepare("INSERT INTO EVENT_NEWS VALUES (?, ?)").run("event", "news2");
     }
     return {
-      newsy: sql.prepare("SELECT * FROM NEWS").all().map((n) => ({ ...n })),
-      eventy: sql.prepare("SELECT * FROM EVENT").all().map((e) => ({ ...e })),
-      relacje: sql.prepare("SELECT * FROM EVENT_NEWS").all().map((r) => ({ ...r })),
+      newsItems: sql.prepare("SELECT id, url, zrodlo AS source, dataPobrania AS firstSeenAt, tytul AS title, autor AS author, dataPublikacji AS publishedAt FROM NEWS").all().map((n) => ({ ...n })),
+      events: sql.prepare("SELECT id, tytul AS title, status, dataRozpoczecia AS startedAt, ostatniaAktualizacja AS updatedAt, typWydarzenia AS eventType FROM EVENT").all().map((e) => ({ ...e })),
+      links: sql.prepare("SELECT * FROM EVENT_NEWS").all().map((r) => ({ ...r })),
     };
   } finally { sql.close(); }
 }
 
-test("migracja zachowuje stare dane i relacje; ponowne otwarcie jest idempotentne", (t) => {
-  const sciezka = sciezkaTestowa(t);
-  const stare = staraBaza(sciezka);
-  let wersja;
+test("Migration preserves legacy data and links; reopening is idempotent", (t) => {
+  const databasePath = createTestDatabasePath(t);
+  const legacyData = createLegacyDatabase(databasePath);
+  let version;
   for (let i = 0; i < 2; i++) {
-    const baza = otworzBazeEventow(sciezka);
+    const database = openDatabase(databasePath);
     try {
-      const { id, url, zrodlo, dataPobrania, tytul, autor, dataPublikacji } = stare.newsy[0];
-      const news = { id, url, zrodlo, dataPobrania };
-      assert.deepEqual(baza.pobierzNewsy(), [news]);
-      assert.deepEqual(baza.pobierzEventy(), stare.eventy);
-      assert.deepEqual(baza.pobierzNewsyEventu("event"), [news]);
-      assert.deepEqual(baza.pobierzEventyNewsa("news"), stare.eventy);
-      const historia = baza.pobierzWersjeNewsa("news");
-      assert.equal(historia.length, 1);
-      if (!wersja) wersja = historia[0];
-      assert.deepEqual(historia, [wersja]);
-      assert.deepEqual(wersja, { id: wersja.id, newsId: id, tytul, autor, dataPublikacji, dataWersji: dataPobrania });
-      assert.deepEqual(baza.zapiszNews({ url, zrodlo, tytul, autor,
-        dataPublikacji: "2019-12-31T13:00:00+01:00" }), news);
-      assert.deepEqual(baza.pobierzWersjeNewsa(id), [wersja]);
-    } finally { baza.zamknij(); }
+      const { id, url, source, firstSeenAt, title, author, publishedAt } = legacyData.newsItems[0];
+      const news = { id, url, source, firstSeenAt };
+      assert.deepEqual(database.getNewsItems(), [news]);
+      assert.deepEqual(database.getEvents(), legacyData.events);
+      assert.deepEqual(database.getNewsForEvent("event"), [news]);
+      assert.deepEqual(database.getEventsForNews("news"), legacyData.events);
+      const history = database.getNewsVersions("news");
+      assert.equal(history.length, 1);
+      if (!version) version = history[0];
+      assert.deepEqual(history, [version]);
+      assert.deepEqual(version, { id: version.id, newsId: id, title, author, publishedAt, versionDetectedAt: firstSeenAt });
+      assert.deepEqual(database.saveNews({ url, source, title, author,
+        publishedAt: "2019-12-31T13:00:00+01:00" }), news);
+      assert.deepEqual(database.getNewsVersions(id), [version]);
+    } finally { database.close(); }
   }
 });
 
-test("różne zapisy tej samej chwili nie tworzą wersji, rzeczywista zmiana tworzy", (t) => {
-  const baza = otworzBazeEventow(sciezkaTestowa(t));
+test("Equivalent timestamp formats create no version; a changed instant does", (t) => {
+  const database = openDatabase(createTestDatabasePath(t));
   try {
-    const news = baza.zapiszNews({ ...artykul, dataPublikacji: "2020-01-01T14:00:00+02:00" });
-    const pierwsza = baza.pobierzNajnowszaWersjeNewsa(news.id);
-    assert.equal(pierwsza.dataPublikacji, "2020-01-01T12:00:00.000Z");
-    for (const dataPublikacji of ["2020-01-01T12:00:00Z", "2020-01-01T12:00:00.000Z",
+    const news = database.saveNews({ ...article, publishedAt: "2020-01-01T14:00:00+02:00" });
+    const firstVersion = database.getLatestNewsVersion(news.id);
+    assert.equal(firstVersion.publishedAt, "2020-01-01T12:00:00.000Z");
+    for (const publishedAt of ["2020-01-01T12:00:00Z", "2020-01-01T12:00:00.000Z",
       "2020-01-01T07:00:00-05:00", "2020-01-01T14:00:00+0200"]) {
-      assert.deepEqual(baza.zapiszNews({ ...artykul, dataPublikacji }), news);
-      assert.deepEqual(baza.pobierzWersjeNewsa(news.id), [pierwsza]);
+      assert.deepEqual(database.saveNews({ ...article, publishedAt }), news);
+      assert.deepEqual(database.getNewsVersions(news.id), [firstVersion]);
     }
-    baza.zapiszNews({ ...artykul, dataPublikacji: "2020-01-01T12:00:00.001Z" });
-    assert.equal(baza.pobierzWersjeNewsa(news.id).length, 2);
-    baza.zapiszNews({ ...artykul, dataPublikacji: null });
-    baza.zapiszNews({ ...artykul, dataPublikacji: null });
-    assert.equal(baza.pobierzWersjeNewsa(news.id).length, 3);
-    assert.equal(baza.pobierzNajnowszaWersjeNewsa(news.id).dataPublikacji, null);
-  } finally { baza.zamknij(); }
+    database.saveNews({ ...article, publishedAt: "2020-01-01T12:00:00.001Z" });
+    assert.equal(database.getNewsVersions(news.id).length, 2);
+    database.saveNews({ ...article, publishedAt: null });
+    database.saveNews({ ...article, publishedAt: null });
+    assert.equal(database.getNewsVersions(news.id).length, 3);
+    assert.equal(database.getLatestNewsVersion(news.id).publishedAt, null);
+  } finally { database.close(); }
 });
 
-test("historyczne NEWS_VERSION są porównywane po normalizacji bez zmiany historii", (t) => {
-  const sciezka = sciezkaTestowa(t);
-  let baza = otworzBazeEventow(sciezka);
+test("Historical versions are compared after date normalization without rewriting history", (t) => {
+  const databasePath = createTestDatabasePath(t);
+  let database = openDatabase(databasePath);
   let news;
-  try { news = baza.zapiszNews(artykul); } finally { baza.zamknij(); }
-  const sql = new DatabaseSync(sciezka);
+  try { news = database.saveNews(article); } finally { database.close(); }
+  const sql = new DatabaseSync(databasePath);
   try {
     sql.prepare("UPDATE NEWS_VERSION SET dataPublikacji = ? WHERE newsId = ?")
       .run("2020-01-01T14:00:00+02:00", news.id);
   } finally { sql.close(); }
   for (let i = 0; i < 2; i++) {
-    baza = otworzBazeEventow(sciezka);
+    database = openDatabase(databasePath);
     try {
-      const historia = baza.pobierzWersjeNewsa(news.id);
-      assert.equal(historia[0].dataPublikacji, "2020-01-01T14:00:00+02:00");
-      assert.deepEqual(baza.zapiszNews(artykul), news);
-      assert.deepEqual(baza.pobierzWersjeNewsa(news.id), historia);
-    } finally { baza.zamknij(); }
+      const history = database.getNewsVersions(news.id);
+      assert.equal(history[0].publishedAt, "2020-01-01T14:00:00+02:00");
+      assert.deepEqual(database.saveNews(article), news);
+      assert.deepEqual(database.getNewsVersions(news.id), history);
+    } finally { database.close(); }
   }
 });
 
-test("migracja z duplikatami URL cofa zmiany i nie usuwa żadnych danych", (t) => {
-  const sciezka = sciezkaTestowa(t);
-  const stare = staraBaza(sciezka, true);
+test("Migration with duplicate URLs rolls back without deleting data", (t) => {
+  const databasePath = createTestDatabasePath(t);
+  const legacyData = createLegacyDatabase(databasePath, true);
   for (let i = 0; i < 2; i++) {
-    assert.throws(() => otworzBazeEventow(sciezka), /Migracja NEWS przerwana: zduplikowany URL/);
-    const sql = new DatabaseSync(sciezka);
+    assert.throws(() => openDatabase(databasePath), /NEWS migration aborted: duplicate URL/);
+    const sql = new DatabaseSync(databasePath);
     try {
-      assert.deepEqual(sql.prepare("SELECT * FROM NEWS").all().map((n) => ({ ...n })), stare.newsy);
-      assert.deepEqual(sql.prepare("SELECT * FROM EVENT").all().map((e) => ({ ...e })), stare.eventy);
-      assert.deepEqual(sql.prepare("SELECT * FROM EVENT_NEWS").all().map((r) => ({ ...r })), stare.relacje);
+      assert.deepEqual(sql.prepare("SELECT id, url, zrodlo AS source, dataPobrania AS firstSeenAt, tytul AS title, autor AS author, dataPublikacji AS publishedAt FROM NEWS").all().map((n) => ({ ...n })), legacyData.newsItems);
+      assert.deepEqual(sql.prepare("SELECT id, tytul AS title, status, dataRozpoczecia AS startedAt, ostatniaAktualizacja AS updatedAt, typWydarzenia AS eventType FROM EVENT").all().map((e) => ({ ...e })), legacyData.events);
+      assert.deepEqual(sql.prepare("SELECT * FROM EVENT_NEWS").all().map((r) => ({ ...r })), legacyData.links);
       assert.equal(sql.prepare("SELECT name FROM sqlite_master WHERE name = 'NEWS_VERSION'").get(), undefined);
     } finally { sql.close(); }
   }

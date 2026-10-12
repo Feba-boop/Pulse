@@ -1,9 +1,9 @@
 const { randomUUID } = require("node:crypto");
 
-function przygotujSchemat(baza) {
-  baza.exec("BEGIN IMMEDIATE");
+function initializeSchema(database) {
+  database.exec("BEGIN IMMEDIATE");
   try {
-    baza.exec(`
+    database.exec(`
       CREATE TABLE IF NOT EXISTS EVENT (
         id TEXT PRIMARY KEY NOT NULL,
         tytul TEXT NOT NULL CHECK (length(trim(tytul)) > 0),
@@ -19,13 +19,13 @@ function przygotujSchemat(baza) {
         dataPobrania TEXT NOT NULL
       );
     `);
-    const duplikat = baza.prepare(`
+    const duplicate = database.prepare(`
       SELECT url FROM NEWS GROUP BY url HAVING count(*) > 1 LIMIT 1
     `).get();
-    if (duplikat) {
-      throw new Error(`Migracja NEWS przerwana: zduplikowany URL ${JSON.stringify(duplikat.url)}. Dane nie zostały scalone ani usunięte.`);
+    if (duplicate) {
+      throw new Error(`NEWS migration aborted: duplicate URL ${JSON.stringify(duplicate.url)}. No data was merged or deleted.`);
     }
-    baza.exec(`
+    database.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url ON NEWS(url);
       CREATE TABLE IF NOT EXISTS NEWS_VERSION (
         id TEXT PRIMARY KEY NOT NULL,
@@ -45,32 +45,32 @@ function przygotujSchemat(baza) {
       CREATE INDEX IF NOT EXISTS idx_event_news_newsId ON EVENT_NEWS(newsId);
     `);
 
-    const starySchemat = baza.prepare("PRAGMA table_info(NEWS)").all()
-      .some((kolumna) => kolumna.name === "tytul");
-    if (starySchemat) {
-      const dodajWersje = baza.prepare(`
+    const isLegacySchema = database.prepare("PRAGMA table_info(NEWS)").all()
+      .some((column) => column.name === "tytul");
+    if (isLegacySchema) {
+      const insertLegacyVersion = database.prepare(`
         INSERT INTO NEWS_VERSION (id, newsId, tytul, dataPublikacji, dataWersji, autor)
         VALUES (?, ?, ?, ?, ?, ?)
       `);
-      for (const news of baza.prepare("SELECT * FROM NEWS").all()) {
-        dodajWersje.run(randomUUID(), news.id, news.tytul, news.dataPublikacji,
-          news.dataPobrania, news.autor);
+      for (const news of database.prepare("SELECT id, url, zrodlo AS source, dataPobrania AS firstSeenAt, tytul AS title, autor AS author, dataPublikacji AS publishedAt FROM NEWS").all()) {
+        insertLegacyVersion.run(randomUUID(), news.id, news.title, news.publishedAt,
+          news.firstSeenAt, news.author);
       }
-      // Usuwamy tylko przeniesione kolumny; rekordy NEWS i ich ID pozostają na miejscu.
-      baza.exec(`
+      // Drop only the migrated columns; NEWS records and their IDs remain in place.
+      database.exec(`
         ALTER TABLE NEWS DROP COLUMN tytul;
         ALTER TABLE NEWS DROP COLUMN dataPublikacji;
         ALTER TABLE NEWS DROP COLUMN autor;
       `);
     }
-    if (baza.prepare("PRAGMA foreign_key_check").all().length > 0) {
-      throw new Error("Migracja przerwana: baza zawiera niepoprawne klucze obce.");
+    if (database.prepare("PRAGMA foreign_key_check").all().length > 0) {
+      throw new Error("Migration aborted: the database contains invalid foreign keys.");
     }
-    baza.exec("COMMIT");
+    database.exec("COMMIT");
   } catch (error) {
-    baza.exec("ROLLBACK");
+    database.exec("ROLLBACK");
     throw error;
   }
 }
 
-module.exports = { przygotujSchemat };
+module.exports = { initializeSchema };

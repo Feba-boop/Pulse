@@ -1,27 +1,27 @@
-// Samodzielna demonstracja: można usunąć ten plik bez zmiany pipeline'u newsów.
-const { otworzBazeEventow, utworzEvent } = require("./baza-eventow");
+// Standalone demonstration; this file can be removed without changing the news pipeline.
+const { openDatabase, createEvent } = require("./storage");
 
-// Opcjonalna ścieżka pozwala sprawdzić zapis w osobnej bazie testowej.
-const baza = otworzBazeEventow(process.argv[2]);
-const idDemonstracji = "pulse-demo-event-v1";
+// An optional path allows persistence checks in a separate test database.
+const database = openDatabase(process.argv[2]);
+const demoEventId = "pulse-demo-event-v1";
 
 try {
-  const zapisanyEvent = baza.pobierzEventy().find((event) => event.id === idDemonstracji);
+  const existingEvent = database.getEvents().find((event) => event.id === demoEventId);
 
-  if (zapisanyEvent) {
-    console.log("Odczytano EVENT zapisany podczas wcześniejszego uruchomienia.");
+  if (existingEvent) {
+    console.log("Loaded an event saved during a previous run.");
   } else {
-    const event = utworzEvent({
-      tytul: "Demonstracja trwałego EVENT-u Pulse",
-      typWydarzenia: "demonstracja",
+    const event = createEvent({
+      title: "Demonstracja trwałego EVENT-u Pulse",
+      eventType: "demonstracja",
     });
-    // Stałe ID dotyczy tylko demonstracji i zapobiega dopisywaniu kolejnych kopii.
-    event.id = idDemonstracji;
-    baza.zapiszEvent(event);
-    console.log("Zapisano demonstracyjny EVENT w SQLite.");
+    // The fixed ID is specific to this demo and prevents duplicate demo events.
+    event.id = demoEventId;
+    database.saveEvent(event);
+    console.log("Saved the demo event in SQLite.");
   }
 
-  console.log(JSON.stringify(baza.pobierzEventy(), null, 2));
+  console.log(JSON.stringify(database.getEvents(), null, 2));
 } finally {
-  baza.zamknij();
+  database.close();
 }

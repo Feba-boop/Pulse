@@ -1,191 +1,181 @@
 # Pulse
 
-Pulse is a Node.js news bot that fetches current news from an external API and displays selected information in the console.
-
-## Features
-
-- Fetches latest news from the Currents API
-- Handles basic API errors
-- Converts API responses into simplified news objects
-- Removes incomplete news without a title or URL
-- Removes exact duplicates based on URL
-- Filters news by language
-- Filters news by category
-- Sorts news by publication date
-- Limits the number of displayed results
-- Calculates title similarity using Jaccard similarity
-- Compares unique pairs of news articles
-- Detects potentially similar articles using a test similarity threshold
-
-## Planned Development
-
-Pulse is currently an early prototype.
-
-Future development will include:
-
-- Connecting the news-fetching pipeline to persistent storage
-- Multiple news sources
-- Grouping related articles into events
-- Comparing new articles with existing events
-- Improved semantic similarity detection
-- AI-based summarization and classification
-- Event timelines
-- Analysis of possible relationships between events
-- Backend API and frontend interface
+Pulse is an early Node.js news intelligence prototype. It fetches current news
+from Currents API, processes articles in memory, and provides persistent SQLite
+storage for events, article identities, article versions, and manual event/news links.
 
 ## Setup
 
-1. Create a `.env` file in the main project folder.
-2. Add your API key to the `.env` file.
-3. Add `CURRENTS_API_KEY=your_api_key` to your `.env` file.
-4. Run the application:
+Verified with Node.js **24.19.0**. Storage uses built-in `node:sqlite`; no npm
+dependencies or separate database server are required.
+
+Create `.env` in the project root with `CURRENTS_API_KEY=your_api_key`, then run:
 
 ```bash
 node --env-file=.env index.js
 ```
 
-## Trwałe EVENT-y — pierwszy etap
+Startup initializes `data/pulse.sqlite` and any missing tables: `EVENT`, `NEWS`,
+`NEWS_VERSION`, and `EVENT_NEWS`. The default path is relative to `storage.js`,
+not the current working directory. The data directory is excluded from Git.
 
-Warstwa SQLite korzysta z wbudowanego `node:sqlite`, bez zależności npm.
-Sprawdzono na Node.js **24.19.0**. Nie jest potrzebny osobny serwer bazy danych.
+## News pipeline
 
-Przy starcie `index.js` powstają katalog `data`, baza `data/pulse.sqlite` i tabele
-`EVENT`, `NEWS`, `NEWS_VERSION` oraz `EVENT_NEWS`, jeśli jeszcze nie istnieją. Ścieżka bazy jest liczona względem modułu,
-nie względem katalogu, z którego uruchomiono polecenie. Dane są wyłączone z Git.
+The pipeline fetches latest news, handles basic API errors, maps response fields,
+removes incomplete articles and exact URL duplicates, and filters English news
+in the `general` category. It compares title pairs using Jaccard similarity with
+a threshold of `0.5` and sorts and limits console output.
 
-Moduł `baza-eventow.js` udostępnia:
+Title comparison lowercases and trims titles, splits on single spaces, and compares
+unique word sets. Each distinct article pair is compared once. The existing sorting
+limitation remains: `sortByPublicationDate()` receives pair objects without a
+`published` field. The external request, response fields, filters, and similarity
+algorithm retain their behavior. The pipeline is not yet connected to article
+storage or automatic event grouping.
 
-- `utworzEvent({ tytul, status, typWydarzenia })` — tworzy obiekt z UUID.
-  Domyślny status to `aktywny`, a typ to `nieokreslony`.
-- `otworzBazeEventow(sciezka?)` — otwiera bazę i tworzy tabelę, jeśli jej nie ma.
-- Metody otwartej bazy: `zapiszEvent(event)`, `pobierzEventy()` i `zamknij()`.
-  Po zakończeniu pracy należy wywołać `zamknij()`, najlepiej w `finally`.
+## Events
 
-EVENT zawiera `id`, `tytul`, `status`, `dataRozpoczecia`,
-`ostatniaAktualizacja` i `typWydarzenia`. Obie daty przy tworzeniu mają tę samą
-wartość w formacie ISO 8601 UTC: jest to czas utworzenia EVENT-u w Pulse,
-nie ustalona data początku wydarzenia w świecie. Status i typ są na razie
-niepustymi tekstami, bez zamkniętego słownika. Zapis dodaje rekord; ponowne
-użycie tego samego ID zgłasza błąd, nie nadpisuje danych.
+`createEvent({ title, status, eventType })` creates a UUID and properties `id`,
+`title`, `status`, `startedAt`, `updatedAt`, and `eventType`. Both timestamps initially
+contain the creation time in ISO UTC; they do not infer the real-world start time.
+Status and type are non-empty strings without a fixed vocabulary. Existing defaults
+`aktywny` and `nieokreslony` are intentionally retained as domain data. Saving an
+existing event ID raises an error rather than overwriting it.
 
-### Sprawdzenie trwałości bez API newsów
+## News identities and versions
 
-Uruchom w katalogu projektu:
+An identity contains `id`, `url`, `source`, and `firstSeenAt`. An exact URL identifies
+one article and SQLite enforces uniqueness. URLs are not normalized, including
+whitespace, capitalization, or trailing slashes.
+
+A version contains `id`, `newsId`, `title`, `publishedAt`, `versionDetectedAt`, and
+`author`. Saving data compares title, publication date, and author with the latest
+version. Changes, including null-to-text transitions and returning to earlier
+values, create versions. Identical data creates no version. Source changes alone
+create no version; the first recorded source remains fixed.
+
+`firstSeenAt` is assigned when `saveNews()` first accepts an article. The first
+version has the same `versionDetectedAt`; subsequent versions receive their detection
+time at save, independently of the publication time. Pass data immediately after
+receiving it. System timestamps use ISO UTC and are not overwritten. The computer
+clock should be correctly set.
+
+Missing author, source, or publication date means `null`. Publication dates require
+a valid timestamp with an explicit timezone and are normalized to ISO 8601 UTC,
+such as `2020-01-01T12:00:00.000Z`. Historical dates with valid timezones are normalized
+in memory for comparison without rewriting history. Equivalent timestamps do not
+create extra versions. Invalid historical dates or dates without an explicit
+timezone are left uninterpreted. Titles are preserved exactly; titles and URLs
+cannot be empty.
+
+## Storage API
+
+Import `openDatabase`, `createEvent`, and `createNews` from `./storage`.
+`openDatabase(path?)` initializes and opens storage. Always call `close()` after use,
+preferably in `finally`. `createNews(articleData)` optionally validates and prepares
+input; it assigns no ID or timestamps. Data can go directly to `saveNews()`.
+
+| Database method | Result |
+| --- | --- |
+| `saveEvent(event)` | Inserts an event. |
+| `getEvents()` | Returns saved events. |
+| `saveNews({ url, title, publishedAt?, author?, source? })` | Creates an identity and first version or conditionally adds a version; returns the identity. |
+| `findNewsByUrl(url)` | Returns an identity or `null`. |
+| `getNews(id)` | Returns an identity or `null`. |
+| `getNewsItems()` | Returns news identities. |
+| `getNewsVersions(newsId)` | Returns versions chronologically; insertion order breaks timestamp ties. |
+| `getLatestNewsVersion(newsId)` | Returns the latest version or `null`. |
+| `linkNewsToEvent(newsId, eventId)` | Links existing records; duplicate links raise an error. |
+| `getNewsForEvent(eventId)` | Returns linked identities without version fields. |
+| `getEventsForNews(newsId)` | Returns linked events. |
+| `close()` | Closes the connection. |
+
+List queries with no results return `[]`. Use the ID returned by `saveNews()` for
+links. The method assigns IDs and system timestamps itself. Identity and version
+writes are atomic (`BEGIN IMMEDIATE`): failed version writes also roll back new
+identities. The write lock covers reading the latest version and deciding whether
+to add one. Foreign keys are enabled on every connection and SQL values are
+parameterized. `EVENT_NEWS` has composite primary key `(eventId, newsId)` and foreign
+keys. Missing records or duplicate links raise errors. An index on `newsId` supports
+reverse lookups. Links do not change event timestamps or status; there is no
+cascading deletion.
+
+```js
+const { openDatabase } = require("./storage");
+const database = openDatabase();
+try {
+  const article = { url: "https://example.com/news", title: "Initial title" };
+  const news = database.saveNews(article);
+  database.saveNews(article); // No additional version.
+  database.saveNews({ ...article, title: "Updated title" });
+  console.log(database.getNewsVersions(news.id));
+} finally {
+  database.close();
+}
+```
+
+## Existing database compatibility
+
+English JavaScript properties are mapped through SQL aliases to unchanged columns:
+
+| SQLite column | JavaScript property |
+| --- | --- |
+| `tytul` | `title` |
+| `dataRozpoczecia` | `startedAt` |
+| `ostatniaAktualizacja` | `updatedAt` |
+| `typWydarzenia` | `eventType` |
+| `zrodlo` | `source` |
+| `dataPobrania` | `firstSeenAt` |
+| `dataPublikacji` | `publishedAt` |
+| `dataWersji` | `versionDetectedAt` |
+| `autor` | `author` |
+
+There is no schema migration for naming. JavaScript module paths and API names
+have changed, so callers must use the new names and properties.
+
+The existing legacy migration in `database-schema.js` runs in one transaction.
+It detects the old schema through `NEWS.tytul`, creates the first version from each
+old article, and uses its preserved first-seen time as the initial detection time.
+It cannot reconstruct unknown article edits.
+
+The migration drops only the migrated columns with `ALTER TABLE DROP COLUMN`.
+IDs, URLs, sources, first-seen times, events, and links remain intact. Foreign keys
+stay enabled and are checked before commit. Reopening does not duplicate versions.
+Duplicate legacy URLs abort migration with a clear error and roll back all changes;
+no data is silently deleted or merged. Resolving duplicates requires a separate decision.
+
+## Persistence demonstration and tests
+
+Run the standalone demo twice:
 
 ```bash
 node demo-event.js
-```
-
-Za pierwszym razem zobaczysz komunikat o zapisie i EVENT z ID
-`pulse-demo-event-v1`. Po zakończeniu procesu uruchom to samo polecenie ponownie:
-
-```bash
 node demo-event.js
 ```
 
-Zobaczysz komunikat o odczycie wcześniejszego EVENT-u. ID i daty pozostaną
-identyczne, a demonstracja nie doda kolejnej kopii. Można podać osobną ścieżkę,
-np. `node demo-event.js data/demo.sqlite`, i dwukrotnie użyć tego polecenia.
-Demonstracja nie wymaga `.env`; można ją później usunąć bez zmian w pipeline.
-Nie usuwaj pliku bazy, jeśli chcesz zachować zapisane dane.
-
-Testy uruchamia się poleceniem:
+The first run saves `pulse-demo-event-v1`; the second loads it with unchanged ID
+and timestamps. Existing demo labels are preserved as data. An optional path such
+as `node demo-event.js data/demo.sqlite` selects a separate database. The demo needs
+no `.env` and can be removed independently. Keep the database file to retain data.
 
 ```bash
 node --test
 ```
 
-Testy używają oddzielnych baz tymczasowych, w tym dwóch osobnych procesów Node.js.
-Nie zapisują danych demonstracyjnych do domyślnej bazy aplikacji.
+Tests use temporary databases, including a two-process persistence check, without
+writing test records to normal storage. Coverage includes versions, historical date
+normalization, uniqueness, foreign keys, atomic rollback, many-to-many links, legacy
+migration, rollback, and idempotence. Legacy fixtures include Polish article data
+to verify preservation through the English API.
 
-Ten etap nie grupuje newsów automatycznie ani nie tworzy historii zmian.
-Pipeline newsów pozostaje bez zmian. Istniejące problemy tego pipeline'u:
-końcowa pętla testowa używa niezdefiniowanego `para`, a `sortujPoDacie` otrzymuje
-pary bez pola `published`. Nie naprawiono ich w ramach obsługi SQLite.
+## Planned development
 
-## NEWS i historia NEWS_VERSION
+- Connect the fetching pipeline to storage.
+- Support multiple news sources.
+- Group articles into events and compare new articles with existing events.
+- Improve semantic similarity; add AI summarization and classification.
+- Build event timelines and analyze relationships between events.
+- Add a backend API and frontend interface.
 
-NEWS to stała tożsamość artykułu: `id`, `url`, `zrodlo`, `dataPobrania`.
-Dokładnie taki sam URL oznacza ten sam NEWS. Unikalny indeks SQLite wymusza
-`UNIQUE(url)`. URL nie jest normalizowany, nawet przez przycinanie spacji.
-
-NEWS_VERSION zawiera `id`, `newsId`, `tytul`, `dataPublikacji`, `dataWersji`, `autor`.
-Przy każdym przekazaniu danych porównujemy dokładne wartości tytułu, daty publikacji
-i autora z najnowszą wersją. Zmiana dowolnej wartości, również `null` na tekst,
-tworzy nową wersję. Powrót do wcześniejszych wartości też tworzy wersję.
-Identyczne dane nie tworzą nowego rekordu. Zmiana samego źródła nie tworzy wersji:
-źródło zapisane przy pierwszym pojawieniu się URL pozostaje niezmienne.
-
-`dataPobrania` to moment pierwszego przyjęcia artykułu przez `zapiszNews()`.
-Pierwsza wersja ma identyczne `dataWersji`. Kolejne wersje otrzymują czas ich
-wykrycia przy zapisie, niezależny od daty publikacji. Dane należy przekazywać
-bezpośrednio po otrzymaniu przez Pulse. Obie daty systemowe są w ISO UTC i nie są
-nadpisywane. Zegar komputera powinien być poprawnie ustawiony.
-
-Brak autora, źródła lub daty publikacji oznacza `null`. Data publikacji wymaga
-poprawnej daty z jawną strefą czasową. Nowe daty są normalizowane do ISO 8601 UTC
-(np. `2020-01-01T12:00:00.000Z`). Historyczne daty z poprawną strefą są normalizowane
-w pamięci przy porównywaniu, więc inny zapis tej samej chwili nie tworzy wersji.
-Istniejące rekordy historii nie są nadpisywane. Historycznych dat niepoprawnych
-lub bez jawnej strefy nie interpretujemy jako czasu lokalnego. Tytuł jest
-zachowywany dokładnie, ale tytuł i URL nie mogą być puste.
-
-### API
-
-Pozostaje `otworzBazeEventow(sciezka?)`, API EVENT i ręczne wiązanie NEWS–EVENT.
-`utworzNews(dane)` opcjonalnie sprawdza i przygotowuje dane artykułu; już nie
-nadaje ID ani czasu pobrania. Można przekazać dane bezpośrednio do `zapiszNews()`.
-
-| Metoda bazy | Wynik |
-| --- | --- |
-| `zapiszNews({ url, tytul, dataPublikacji?, autor?, zrodlo? })` | Tworzy NEWS i pierwszą wersję lub warunkowo dopisuje wersję; zwraca stały rekord NEWS. |
-| `znajdzNewsPoUrl(url)` | NEWS lub `null`. |
-| `pobierzNews(id)` | NEWS lub `null`. |
-| `pobierzNewsy()` | Lista rekordów tożsamości NEWS. |
-| `pobierzWersjeNewsa(newsId)` | Wersje chronologicznie; przy identycznym czasie według kolejności dodania. |
-| `pobierzNajnowszaWersjeNewsa(newsId)` | Ostatnia wersja lub `null`. |
-| `powiazNewsZEventem(newsId, eventId)` | Łączy istniejące rekordy, odrzuca duplikaty. |
-| `pobierzNewsyEventu(eventId)` | Tożsamości NEWS związane z EVENT-em, bez pól wersji. |
-| `pobierzEventyNewsa(newsId)` | EVENT-y związane z NEWS-em. |
-
-Odczyty list bez wyników zwracają `[]`. Do powiązań używaj ID z wyniku
-`zapiszNews()`. Wywołanie nie przyjmuje własnego ID ani własnych dat systemowych.
-Zapis jest atomowy (`BEGIN IMMEDIATE`): błąd wersji wycofuje również nowy NEWS.
-Blokada zapisu obejmuje odczyt ostatniej wersji i decyzję o dopisaniu, żeby dwa
-połączenia nie podejmowały tej decyzji na tym samym nieaktualnym stanie.
-Klucze obce są włączone na każdym połączeniu. Dane SQL są parametryzowane.
-
-```js
-const { otworzBazeEventow } = require("./baza-eventow");
-const baza = otworzBazeEventow();
-try {
-  const dane = { url: "https://example.com/news", tytul: "Pierwszy tytuł" };
-  const news = baza.zapiszNews(dane);
-  baza.zapiszNews(dane); // Bez nowej wersji.
-  baza.zapiszNews({ ...dane, tytul: "Zaktualizowany tytuł" });
-  console.log(baza.pobierzWersjeNewsa(news.id));
-} finally {
-  baza.zamknij();
-}
-```
-
-### Migracja istniejącej bazy
-
-`schemat-bazy.js` uruchamia migrację przy otwarciu bazy, w jednej transakcji.
-Wykrywa stary schemat po kolumnie `NEWS.tytul`. Dla każdego starego NEWS-a dodaje
-pierwszą wersję z dotychczasowym tytułem, autorem i datą publikacji. Jako
-`dataWersji` przyjmuje zachowane `dataPobrania`: to jedyny zapisany wcześniej
-moment obserwacji; migracja nie odtwarza nieznanej historii zmian.
-
-Następnie usuwa z NEWS wyłącznie przeniesione kolumny (`ALTER TABLE DROP COLUMN`).
-ID, URL, źródło, czas pobrania, EVENT-y i relacje pozostają na miejscu. Nie wyłącza
-kluczy obcych. Sprawdza ich spójność przed zatwierdzeniem. Ponowne otwarcie nie
-tworzy kopii wersji. Operacje te obsługuje SQLite w Node.js 24.19.0.
-
-Zduplikowane URL-e przerywają migrację czytelnym błędem; cała transakcja jest
-wycofywana. Nie usuwamy i nie scalamy danych. Rozstrzygnięcie duplikatów wymaga
-osobnej decyzji. Po błędzie bazę można otworzyć ponownie bez utraty starego stanu.
-
-Testy `node --test` używają wyłącznie baz tymczasowych. Nie uruchamiają migracji
-na normalnej bazie Pulse. Mechanizm nie monitoruje URL-i i nie jest jeszcze
-podłączony do pipeline'u pobierania newsów; `usunDuplikaty()` pozostaje bez zmian.
+There is no automatic URL monitoring, semantic change analysis, or trading and
+backtesting logic at this stage.

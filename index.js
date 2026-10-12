@@ -1,10 +1,10 @@
-const { otworzBazeEventow } = require("./baza-eventow");
+const { openDatabase } = require("./storage");
 
-// Na tym etapie tylko inicjalizujemy trwałą bazę; pipeline nie przypisuje newsów do EVENT-ów.
-const bazaEventow = otworzBazeEventow();
-bazaEventow.zamknij();
+// Initialize persistent storage before running the news pipeline.
+const database = openDatabase();
+database.close();
 
-async function pobierzNewsy() {
+async function fetchNews() {
   try {
     let response = await fetch(
       "https://api.currentsapi.services/v1/latest-news",
@@ -17,18 +17,18 @@ async function pobierzNewsy() {
 
     if (!response.ok) {
       if (response.status === 401) {
-        console.log("Problem z kluczem API");
+        console.log("API key error");
       } else if (response.status === 404) {
-        console.log("Nie znaleziono endpointu");
+        console.log("Endpoint not found");
       } else {
-        console.log("Inny błąd API");
+        console.log("Other API error");
       }
       return;
     }
 
     let data = await response.json();
 
-    let prosteNewsy = data.news.map(function (news) {
+    let mappedNews = data.news.map(function (news) {
       return {
         title: news.title,
         published: news.published,
@@ -39,59 +39,59 @@ async function pobierzNewsy() {
       };
     });
 
-    let pelneNewsy = usunNiepelneNewsy(prosteNewsy);
-    let unikalneNewsy = usunDuplikaty(pelneNewsy);
+    let completeNews = removeIncompleteNews(mappedNews);
+    let uniqueNews = removeDuplicates(completeNews);
 
-    let angielskieNewsy = filtrujPoJezyku(unikalneNewsy, "en");
-    let generalneAngielskieNewsy = filtrujPoKategorii(
-      angielskieNewsy,
+    let englishNews = filterByLanguage(uniqueNews, "en");
+    let generalEnglishNews = filterByCategory(
+      englishNews,
       "general",
     );
 
-    let podobnePary = znajdzParyPodobnychNewsow(generalneAngielskieNewsy);
+    let similarPairs = findSimilarNewsPairs(generalEnglishNews);
 
-    console.log(podobnePary.length);
+    console.log(similarPairs.length);
 
-    for (let i = 0; i < podobnePary.length; i++) {
-      let para = podobnePary[i];
+    for (let i = 0; i < similarPairs.length; i++) {
+      let pair = similarPairs[i];
 
-      console.log(para.pierwszyNews.title);
-      console.log(para.drugiNews.title);
+      console.log(pair.firstNews.title);
+      console.log(pair.secondNews.title);
     }
 
-    let posortowaneNewsy = sortujPoDacie(podobnePary);
-    let pierwsze5 = ograniczLiczbeNewsow(posortowaneNewsy, 5);
+    let sortedNews = sortByPublicationDate(similarPairs);
+    let firstFive = limitNews(sortedNews, 5);
 
-    console.log(pierwsze5);
+    console.log(firstFive);
   } catch (error) {
     console.log(error);
   }
 }
 
-function filtrujPoJezyku(newsy, jezyk) {
-  return newsy.filter(function (news) {
-    return news.language === jezyk;
+function filterByLanguage(newsItems, language) {
+  return newsItems.filter(function (news) {
+    return news.language === language;
   });
 }
 
-function filtrujPoKategorii(newsy, kategoria) {
-  return newsy.filter(function (news) {
-    return news.category.includes(kategoria);
+function filterByCategory(newsItems, category) {
+  return newsItems.filter(function (news) {
+    return news.category.includes(category);
   });
 }
 
-function sortujPoDacie(newsy) {
-  return newsy.sort(function (a, b) {
+function sortByPublicationDate(newsItems) {
+  return newsItems.sort(function (a, b) {
     return new Date(b.published) - new Date(a.published);
   });
 }
 
-function ograniczLiczbeNewsow(newsy, limit) {
-  return newsy.slice(0, limit);
+function limitNews(newsItems, limit) {
+  return newsItems.slice(0, limit);
 }
 
-function usunNiepelneNewsy(newsy) {
-  return newsy.filter(function (news) {
+function removeIncompleteNews(newsItems) {
+  return newsItems.filter(function (news) {
     return (
       news.title &&
       news.title.trim() !== "" &&
@@ -101,67 +101,67 @@ function usunNiepelneNewsy(newsy) {
   });
 }
 
-function usunDuplikaty(newsy) {
-  return newsy.filter(function (news, index) {
+function removeDuplicates(newsItems) {
+  return newsItems.filter(function (news, index) {
     return (
       index ===
-      newsy.findIndex(function (innyNews) {
-        return innyNews.url === news.url;
+      newsItems.findIndex(function (otherNews) {
+        return otherNews.url === news.url;
       })
     );
   });
 }
 
-function obliczPodobienstwo(tytulA, tytulB) {
-  let slowaA = new Set(tytulA.toLowerCase().trim().split(" "));
-  let slowaB = new Set(tytulB.toLowerCase().trim().split(" "));
+function calculateTitleSimilarity(titleA, titleB) {
+  let wordsA = new Set(titleA.toLowerCase().trim().split(" "));
+  let wordsB = new Set(titleB.toLowerCase().trim().split(" "));
 
-  let wspolneSlowa = [...slowaA].filter(function (slowo) {
-    return slowaB.has(slowo);
+  let sharedWords = [...wordsA].filter(function (word) {
+    return wordsB.has(word);
   });
 
-  let wszystkieSlowa = new Set([...slowaA, ...slowaB]);
+  let allWords = new Set([...wordsA, ...wordsB]);
 
-  return wspolneSlowa.length / wszystkieSlowa.size;
+  return sharedWords.length / allWords.size;
 }
 
-function czyNewsySaPodobne(newsA, newsB) {
-  let podobienstwo = obliczPodobienstwo(newsA.title, newsB.title);
+function areNewsSimilar(newsA, newsB) {
+  let similarity = calculateTitleSimilarity(newsA.title, newsB.title);
 
-  return podobienstwo >= 0.5;
+  return similarity >= 0.5;
 }
 
-function znajdzPodobneNewsy(newsy, szukanyNews) {
-  return newsy.filter(function (news) {
-    return news !== szukanyNews && czyNewsySaPodobne(news, szukanyNews);
+function findSimilarNews(newsItems, targetNews) {
+  return newsItems.filter(function (news) {
+    return news !== targetNews && areNewsSimilar(news, targetNews);
   });
 }
 
-function znajdzParyPodobnychNewsow(newsy) {
-  let podobnePary = [];
+function findSimilarNewsPairs(newsItems) {
+  let similarPairs = [];
 
-  for (let i = 0; i < newsy.length; i++) {
-    for (let j = i + 1; j < newsy.length; j++) {
-      let newsA = newsy[i];
-      let newsB = newsy[j];
+  for (let i = 0; i < newsItems.length; i++) {
+    for (let j = i + 1; j < newsItems.length; j++) {
+      let newsA = newsItems[i];
+      let newsB = newsItems[j];
 
-      let podobienstwo = obliczPodobienstwo(newsA.title, newsB.title);
+      let similarity = calculateTitleSimilarity(newsA.title, newsB.title);
 
-      console.log(newsA.title, newsB.title, podobienstwo);
-      if (czyNewsySaPodobne(newsA, newsB)) {
+      console.log(newsA.title, newsB.title, similarity);
+      if (areNewsSimilar(newsA, newsB)) {
         console.log(newsA.title);
         console.log(newsB.title);
 
-        let para = {
-          pierwszyNews: newsA,
-          drugiNews: newsB,
+        let pair = {
+          firstNews: newsA,
+          secondNews: newsB,
         };
 
-        podobnePary.push(para);
+        similarPairs.push(pair);
       }
     }
   }
-  return podobnePary;
+  return similarPairs;
 }
 
-pobierzNewsy();
+fetchNews();
