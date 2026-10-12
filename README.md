@@ -50,7 +50,7 @@ Warstwa SQLite korzysta z wbudowanego `node:sqlite`, bez zależności npm.
 Sprawdzono na Node.js **24.19.0**. Nie jest potrzebny osobny serwer bazy danych.
 
 Przy starcie `index.js` powstają katalog `data`, baza `data/pulse.sqlite` i tabele
-`EVENT`, `NEWS` oraz `EVENT_NEWS`, jeśli jeszcze nie istnieją. Ścieżka bazy jest liczona względem modułu,
+`EVENT`, `NEWS`, `NEWS_VERSION` oraz `EVENT_NEWS`, jeśli jeszcze nie istnieją. Ścieżka bazy jest liczona względem modułu,
 nie względem katalogu, z którego uruchomiono polecenie. Dane są wyłączone z Git.
 
 Moduł `baza-eventow.js` udostępnia:
@@ -103,69 +103,89 @@ Pipeline newsów pozostaje bez zmian. Istniejące problemy tego pipeline'u:
 końcowa pętla testowa używa niezdefiniowanego `para`, a `sortujPoDacie` otrzymuje
 pary bez pola `published`. Nie naprawiono ich w ramach obsługi SQLite.
 
-## Trwałe NEWS-y i relacja wiele-do-wielu
+## NEWS i historia NEWS_VERSION
 
-Ten sam moduł `baza-eventow.js` udostępnia teraz również `utworzNews({ tytul,
-url, dataPublikacji, autor, zrodlo })`. Obiekt zawiera siedem pól:
-`id`, `tytul`, `dataPublikacji`, `dataPobrania`, `autor`, `zrodlo`, `url`.
+NEWS to stała tożsamość artykułu: `id`, `url`, `zrodlo`, `dataPobrania`.
+Dokładnie taki sam URL oznacza ten sam NEWS. Unikalny indeks SQLite wymusza
+`UNIQUE(url)`. URL nie jest normalizowany, nawet przez przycinanie spacji.
 
-- `id` to nowy UUID; tytuł i URL są wymagane i nie mogą być puste.
-- `dataPublikacji` pochodzi od źródła. Jeśli jest dostępna, należy podać datę
-  ze strefą czasową (np. `2026-10-03T10:00:00+02:00`); jest normalizowana do ISO UTC.
-  Bez strefy funkcja zgłasza błąd, zamiast przyjmować lokalną strefę komputera.
-- `dataPobrania` to czas wywołania `utworzNews()` w ISO UTC. Obiekt należy tworzyć
-  bezpośrednio po otrzymaniu informacji przez Pulse. Zapis i ponowny odczyt nie
-  zmieniają tej daty; nie jest ona kopiowana z daty publikacji.
-- Brak daty publikacji, autora lub źródła jest zapisywany jako `null`.
-  Źródło jest na tym etapie tekstem dostarczonym przez wywołującego, bez automatycznego
-  rozpoznawania wydawcy. URL nie ma ograniczenia unikalności; deduplikacja po URL
-  nie jest częścią tego etapu.
+NEWS_VERSION zawiera `id`, `newsId`, `tytul`, `dataPublikacji`, `dataWersji`, `autor`.
+Przy każdym przekazaniu danych porównujemy dokładne wartości tytułu, daty publikacji
+i autora z najnowszą wersją. Zmiana dowolnej wartości, również `null` na tekst,
+tworzy nową wersję. Powrót do wcześniejszych wartości też tworzy wersję.
+Identyczne dane nie tworzą nowego rekordu. Zmiana samego źródła nie tworzy wersji:
+źródło zapisane przy pierwszym pojawieniu się URL pozostaje niezmienne.
 
-Metody otwartej bazy:
+`dataPobrania` to moment pierwszego przyjęcia artykułu przez `zapiszNews()`.
+Pierwsza wersja ma identyczne `dataWersji`. Kolejne wersje otrzymują czas ich
+wykrycia przy zapisie, niezależny od daty publikacji. Dane należy przekazywać
+bezpośrednio po otrzymaniu przez Pulse. Obie daty systemowe są w ISO UTC i nie są
+nadpisywane. Zegar komputera powinien być poprawnie ustawiony.
 
-| Metoda | Działanie |
+Brak autora, źródła lub daty publikacji oznacza `null`. Data publikacji wymaga
+poprawnej daty z jawną strefą czasową. Nowe daty są normalizowane do ISO 8601 UTC
+(np. `2020-01-01T12:00:00.000Z`). Historyczne daty z poprawną strefą są normalizowane
+w pamięci przy porównywaniu, więc inny zapis tej samej chwili nie tworzy wersji.
+Istniejące rekordy historii nie są nadpisywane. Historycznych dat niepoprawnych
+lub bez jawnej strefy nie interpretujemy jako czasu lokalnego. Tytuł jest
+zachowywany dokładnie, ale tytuł i URL nie mogą być puste.
+
+### API
+
+Pozostaje `otworzBazeEventow(sciezka?)`, API EVENT i ręczne wiązanie NEWS–EVENT.
+`utworzNews(dane)` opcjonalnie sprawdza i przygotowuje dane artykułu; już nie
+nadaje ID ani czasu pobrania. Można przekazać dane bezpośrednio do `zapiszNews()`.
+
+| Metoda bazy | Wynik |
 | --- | --- |
-| `zapiszNews(news)` | Dodaje NEWS; istniejące ID powoduje błąd, bez nadpisania. |
-| `pobierzNewsy()` | Zwraca zapisane NEWS-y. |
-| `powiazNewsZEventem(newsId, eventId)` | Łączy dwa wcześniej zapisane rekordy. |
-| `pobierzNewsyEventu(eventId)` | Zwraca NEWS-y wskazanego EVENT-u. |
-| `pobierzEventyNewsa(newsId)` | Zwraca EVENT-y wskazanego NEWS-a. |
+| `zapiszNews({ url, tytul, dataPublikacji?, autor?, zrodlo? })` | Tworzy NEWS i pierwszą wersję lub warunkowo dopisuje wersję; zwraca stały rekord NEWS. |
+| `znajdzNewsPoUrl(url)` | NEWS lub `null`. |
+| `pobierzNews(id)` | NEWS lub `null`. |
+| `pobierzNewsy()` | Lista rekordów tożsamości NEWS. |
+| `pobierzWersjeNewsa(newsId)` | Wersje chronologicznie; przy identycznym czasie według kolejności dodania. |
+| `pobierzNajnowszaWersjeNewsa(newsId)` | Ostatnia wersja lub `null`. |
+| `powiazNewsZEventem(newsId, eventId)` | Łączy istniejące rekordy, odrzuca duplikaty. |
+| `pobierzNewsyEventu(eventId)` | Tożsamości NEWS związane z EVENT-em, bez pól wersji. |
+| `pobierzEventyNewsa(newsId)` | EVENT-y związane z NEWS-em. |
 
-Odczyty relacji bez dopasowań (także dla nieistniejącego ID) zwracają pustą tablicę.
-NEWS-y są sortowane po `dataPobrania`, a EVENT-y po `dataRozpoczecia`, rosnąco,
-z ID jako dodatkowym kryterium. Powiązanie nie zmienia dat ani statusu rekordów.
-
-`EVENT_NEWS` ma klucze obce oraz złożony klucz główny `(eventId, newsId)`.
-Klucze obce są jawnie włączane na każdym połączeniu. Nieistniejący rekord albo
-powtórzone powiązanie powodują błąd SQLite. Nie ma kasowania kaskadowego.
-Dodatkowy indeks po `newsId` wspiera wyszukiwanie powiązań w drugim kierunku.
-Wszystkie wartości w zapisie i filtrowaniu przekazywane są przez parametry SQL.
-
-Przykład ręcznego użycia (bez API i automatycznego grupowania):
+Odczyty list bez wyników zwracają `[]`. Do powiązań używaj ID z wyniku
+`zapiszNews()`. Wywołanie nie przyjmuje własnego ID ani własnych dat systemowych.
+Zapis jest atomowy (`BEGIN IMMEDIATE`): błąd wersji wycofuje również nowy NEWS.
+Blokada zapisu obejmuje odczyt ostatniej wersji i decyzję o dopisaniu, żeby dwa
+połączenia nie podejmowały tej decyzji na tym samym nieaktualnym stanie.
+Klucze obce są włączone na każdym połączeniu. Dane SQL są parametryzowane.
 
 ```js
-const { otworzBazeEventow, utworzEvent, utworzNews } = require("./baza-eventow");
+const { otworzBazeEventow } = require("./baza-eventow");
 const baza = otworzBazeEventow();
 try {
-  const event = utworzEvent({ tytul: "Przykładowe wydarzenie" });
-  const news = utworzNews({
-    tytul: "Przykładowa wiadomość",
-    url: "https://example.com/news",
-    dataPublikacji: "2026-10-03T10:00:00+02:00",
-    zrodlo: "Przykładowy wydawca",
-  });
-  baza.zapiszEvent(event);
-  baza.zapiszNews(news);
-  baza.powiazNewsZEventem(news.id, event.id);
-  console.log(baza.pobierzNewsyEventu(event.id));
-  console.log(baza.pobierzEventyNewsa(news.id));
+  const dane = { url: "https://example.com/news", tytul: "Pierwszy tytuł" };
+  const news = baza.zapiszNews(dane);
+  baza.zapiszNews(dane); // Bez nowej wersji.
+  baza.zapiszNews({ ...dane, tytul: "Zaktualizowany tytuł" });
+  console.log(baza.pobierzWersjeNewsa(news.id));
 } finally {
   baza.zamknij();
 }
 ```
 
-Każde wykonanie tego przykładu tworzy nowe rekordy. Istniejąca baza z samą tabelą
-EVENT zostanie rozszerzona przy kolejnym otwarciu, bez usuwania danych.
-Pobieranie newsów z API nie zapisuje ich jeszcze automatycznie do SQLite.
-Testy `node --test` sprawdzają trwałość, oba kierunki relacji, blokadę duplikatów
-i niepoprawnych kluczy obcych oraz rozszerzenie starej bazy z zachowaniem EVENT-ów.
+### Migracja istniejącej bazy
+
+`schemat-bazy.js` uruchamia migrację przy otwarciu bazy, w jednej transakcji.
+Wykrywa stary schemat po kolumnie `NEWS.tytul`. Dla każdego starego NEWS-a dodaje
+pierwszą wersję z dotychczasowym tytułem, autorem i datą publikacji. Jako
+`dataWersji` przyjmuje zachowane `dataPobrania`: to jedyny zapisany wcześniej
+moment obserwacji; migracja nie odtwarza nieznanej historii zmian.
+
+Następnie usuwa z NEWS wyłącznie przeniesione kolumny (`ALTER TABLE DROP COLUMN`).
+ID, URL, źródło, czas pobrania, EVENT-y i relacje pozostają na miejscu. Nie wyłącza
+kluczy obcych. Sprawdza ich spójność przed zatwierdzeniem. Ponowne otwarcie nie
+tworzy kopii wersji. Operacje te obsługuje SQLite w Node.js 24.19.0.
+
+Zduplikowane URL-e przerywają migrację czytelnym błędem; cała transakcja jest
+wycofywana. Nie usuwamy i nie scalamy danych. Rozstrzygnięcie duplikatów wymaga
+osobnej decyzji. Po błędzie bazę można otworzyć ponownie bez utraty starego stanu.
+
+Testy `node --test` używają wyłącznie baz tymczasowych. Nie uruchamiają migracji
+na normalnej bazie Pulse. Mechanizm nie monitoruje URL-i i nie jest jeszcze
+podłączony do pipeline'u pobierania newsów; `usunDuplikaty()` pozostaje bez zmian.

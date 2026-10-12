@@ -2,13 +2,20 @@ const { DatabaseSync } = require("node:sqlite");
 const { randomUUID } = require("node:crypto");
 const { mkdirSync } = require("node:fs");
 const { dirname, join, resolve } = require("node:path");
+const { przygotujSchemat } = require("./schemat-bazy");
 
 const domyslnaSciezkaBazy = join(__dirname, "data", "pulse.sqlite");
 
-function utworzEvent({ tytul, status = "aktywny", typWydarzenia = "nieokreslony" }) {
+function utworzEvent({
+  tytul,
+  status = "aktywny",
+  typWydarzenia = "nieokreslony",
+}) {
   for (const wartosc of [tytul, status, typWydarzenia]) {
     if (typeof wartosc !== "string" || wartosc.trim() === "") {
-      throw new TypeError("Tytuł, status i typ wydarzenia muszą być niepustymi tekstami.");
+      throw new TypeError(
+        "Tytuł, status i typ wydarzenia muszą być niepustymi tekstami.",
+      );
     }
   }
 
@@ -23,8 +30,23 @@ function utworzEvent({ tytul, status = "aktywny", typWydarzenia = "nieokreslony"
   };
 }
 
-function utworzNews({ tytul, url, dataPublikacji = null, autor = null, zrodlo = null }) {
-  const dataPobrania = new Date().toISOString();
+// Historyczne daty bez poprawnej, jawnej strefy pozostawiamy bez interpretacji.
+function normalizujDatePublikacji(data) {
+  if (typeof data === "string" &&
+      /(Z|[+-]\d{2}:?\d{2})$/i.test(data.trim()) &&
+      Number.isFinite(Date.parse(data))) {
+    return new Date(data).toISOString();
+  }
+  return data;
+}
+
+function utworzNews({
+  tytul,
+  url,
+  dataPublikacji = null,
+  autor = null,
+  zrodlo = null,
+}) {
   for (const wartosc of [tytul, url]) {
     if (typeof wartosc !== "string" || wartosc.trim() === "") {
       throw new TypeError("Tytuł i URL NEWS-a muszą być niepustymi tekstami.");
@@ -38,22 +60,23 @@ function utworzNews({ tytul, url, dataPublikacji = null, autor = null, zrodlo = 
 
   if (dataPublikacji !== null) {
     // Jawna strefa zapobiega interpretowaniu czasu źródła w lokalnej strefie Pulse.
-    if (typeof dataPublikacji !== "string" ||
-        !/(Z|[+-]\d{2}:?\d{2})$/i.test(dataPublikacji.trim()) ||
-        !Number.isFinite(Date.parse(dataPublikacji))) {
-      throw new TypeError("Data publikacji musi być poprawną datą ze strefą czasową lub null.");
+    if (
+      typeof dataPublikacji !== "string" ||
+      !/(Z|[+-]\d{2}:?\d{2})$/i.test(dataPublikacji.trim()) ||
+      !Number.isFinite(Date.parse(dataPublikacji))
+    ) {
+      throw new TypeError(
+        "Data publikacji musi być poprawną datą ze strefą czasową lub null.",
+      );
     }
-    dataPublikacji = new Date(dataPublikacji).toISOString();
   }
 
   return {
-    id: randomUUID(),
-    tytul: tytul.trim(),
-    dataPublikacji,
-    dataPobrania,
+    tytul,
+    dataPublikacji: normalizujDatePublikacji(dataPublikacji),
     autor,
     zrodlo,
-    url: url.trim(),
+    url,
   };
 }
 
@@ -64,34 +87,7 @@ function otworzBazeEventow(sciezka = domyslnaSciezkaBazy) {
 
   try {
     baza.exec("PRAGMA foreign_keys = ON");
-    baza.exec(`
-      CREATE TABLE IF NOT EXISTS EVENT (
-        id TEXT PRIMARY KEY NOT NULL,
-        tytul TEXT NOT NULL CHECK (length(trim(tytul)) > 0),
-        status TEXT NOT NULL CHECK (length(trim(status)) > 0),
-        dataRozpoczecia TEXT NOT NULL,
-        ostatniaAktualizacja TEXT NOT NULL,
-        typWydarzenia TEXT NOT NULL CHECK (length(trim(typWydarzenia)) > 0)
-      );
-
-      CREATE TABLE IF NOT EXISTS NEWS (
-        id TEXT PRIMARY KEY NOT NULL,
-        tytul TEXT NOT NULL CHECK (length(trim(tytul)) > 0),
-        dataPublikacji TEXT,
-        dataPobrania TEXT NOT NULL,
-        autor TEXT,
-        zrodlo TEXT,
-        url TEXT NOT NULL CHECK (length(trim(url)) > 0)
-      );
-
-      CREATE TABLE IF NOT EXISTS EVENT_NEWS (
-        eventId TEXT NOT NULL REFERENCES EVENT(id),
-        newsId TEXT NOT NULL REFERENCES NEWS(id),
-        PRIMARY KEY (eventId, newsId)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_event_news_newsId ON EVENT_NEWS(newsId);
-    `);
+    przygotujSchemat(baza);
 
     const zapis = baza.prepare(`
       INSERT INTO EVENT (id, tytul, status, dataRozpoczecia, ostatniaAktualizacja, typWydarzenia)
@@ -102,18 +98,17 @@ function otworzBazeEventow(sciezka = domyslnaSciezkaBazy) {
       FROM EVENT ORDER BY dataRozpoczecia, id
     `);
     const zapisNewsa = baza.prepare(`
-      INSERT INTO NEWS (id, tytul, dataPublikacji, dataPobrania, autor, zrodlo, url)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO NEWS (id, url, zrodlo, dataPobrania) VALUES (?, ?, ?, ?)
     `);
     const odczytNewsow = baza.prepare(`
-      SELECT id, tytul, dataPublikacji, dataPobrania, autor, zrodlo, url
+      SELECT id, url, zrodlo, dataPobrania
       FROM NEWS ORDER BY dataPobrania, id
     `);
     const zapisPowiazania = baza.prepare(`
       INSERT INTO EVENT_NEWS (eventId, newsId) VALUES (?, ?)
     `);
     const newsyEventu = baza.prepare(`
-      SELECT n.id, n.tytul, n.dataPublikacji, n.dataPobrania, n.autor, n.zrodlo, n.url
+      SELECT n.id, n.url, n.zrodlo, n.dataPobrania
       FROM NEWS AS n JOIN EVENT_NEWS AS en ON en.newsId = n.id
       WHERE en.eventId = ? ORDER BY n.dataPobrania, n.id
     `);
@@ -122,6 +117,25 @@ function otworzBazeEventow(sciezka = domyslnaSciezkaBazy) {
       FROM EVENT AS e JOIN EVENT_NEWS AS en ON en.eventId = e.id
       WHERE en.newsId = ? ORDER BY e.dataRozpoczecia, e.id
     `);
+    const newsPoUrl = baza.prepare(
+      "SELECT id, url, zrodlo, dataPobrania FROM NEWS WHERE url = ?",
+    );
+    const newsPoId = baza.prepare(
+      "SELECT id, url, zrodlo, dataPobrania FROM NEWS WHERE id = ?",
+    );
+    const wersje = baza.prepare(`
+      SELECT id, newsId, tytul, dataPublikacji, dataWersji, autor FROM NEWS_VERSION
+      WHERE newsId = ? ORDER BY dataWersji, rowid
+    `);
+    const najnowsza = baza.prepare(`
+      SELECT id, newsId, tytul, dataPublikacji, dataWersji, autor FROM NEWS_VERSION
+      WHERE newsId = ? ORDER BY dataWersji DESC, rowid DESC LIMIT 1
+    `);
+    const zapisWersji = baza.prepare(`
+      INSERT INTO NEWS_VERSION (id, newsId, tytul, dataPublikacji, dataWersji, autor)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const obiektLubNull = (wiersz) => (wiersz ? { ...wiersz } : null);
 
     return {
       zapiszEvent(event) {
@@ -137,11 +151,55 @@ function otworzBazeEventow(sciezka = domyslnaSciezkaBazy) {
       pobierzEventy() {
         return odczyt.all().map((event) => ({ ...event }));
       },
-      zapiszNews(news) {
-        zapisNewsa.run(
-          news.id, news.tytul, news.dataPublikacji, news.dataPobrania,
-          news.autor, news.zrodlo, news.url,
-        );
+      zapiszNews(dane) {
+        const artykul = utworzNews(dane);
+        baza.exec("BEGIN IMMEDIATE");
+        try {
+          const teraz = new Date().toISOString();
+          let news = newsPoUrl.get(artykul.url);
+          if (!news) {
+            news = {
+              id: randomUUID(),
+              url: artykul.url,
+              zrodlo: artykul.zrodlo,
+              dataPobrania: teraz,
+            };
+            zapisNewsa.run(news.id, news.url, news.zrodlo, news.dataPobrania);
+          }
+          const ostatnia = najnowsza.get(news.id);
+          if (
+            !ostatnia ||
+            ostatnia.tytul !== artykul.tytul ||
+            normalizujDatePublikacji(ostatnia.dataPublikacji) !== artykul.dataPublikacji ||
+            ostatnia.autor !== artykul.autor
+          ) {
+            zapisWersji.run(
+              randomUUID(),
+              news.id,
+              artykul.tytul,
+              artykul.dataPublikacji,
+              teraz,
+              artykul.autor,
+            );
+          }
+          baza.exec("COMMIT");
+          return { ...news };
+        } catch (error) {
+          baza.exec("ROLLBACK");
+          throw error;
+        }
+      },
+      znajdzNewsPoUrl(url) {
+        return obiektLubNull(newsPoUrl.get(url));
+      },
+      pobierzNews(id) {
+        return obiektLubNull(newsPoId.get(id));
+      },
+      pobierzWersjeNewsa(newsId) {
+        return wersje.all(newsId).map((wersja) => ({ ...wersja }));
+      },
+      pobierzNajnowszaWersjeNewsa(newsId) {
+        return obiektLubNull(najnowsza.get(newsId));
       },
       pobierzNewsy() {
         return odczytNewsow.all().map((news) => ({ ...news }));

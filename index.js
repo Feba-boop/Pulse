@@ -165,23 +165,3 @@ function znajdzParyPodobnychNewsow(newsy) {
 }
 
 pobierzNewsy();
-
-let testoweNewsy = [
-  {
-    title: "Microsoft launches new AI chip",
-  },
-  {
-    title: "Microsoft launches powerful new AI chip",
-  },
-  {
-    title: "Barcelona wins football match",
-  },
-];
-
-let podobneParyTestowe = znajdzParyPodobnychNewsow(testoweNewsy);
-console.log(podobneParyTestowe.length);
-
-for (let i = 0; i < podobneParyTestowe.length; i++) {
-  console.log(para.pierwszyNews.title);
-  console.log(para.drugiNews.title);
-}
