@@ -170,6 +170,11 @@ to verify preservation through the English API.
 
 ## Planned development
 
+Local AI integration scaffolding and manual setup instructions are available in
+[docs/AI_SETUP.md](docs/AI_SETUP.md). Run `node ai-input.js` to inspect prepared
+inputs, or configure a local model and run `node demo-ai.js` for title-only
+classification. These scripts are separate from the normal fetcher.
+
 - Connect the fetching pipeline to storage.
 - Support multiple news sources.
 - Group articles into events and compare new articles with existing events.
